@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Reflection.Emit;
 using JetBrains.Annotations;
 using UnityEngine;
 using UnityEngine.UI;
@@ -12,8 +11,14 @@ namespace Modding
         private static GameObject _overlayCanvas;
         private static GameObject _textPanel;
         private static Font _font;
-        private readonly List<string> _messages = new(25);
+        
         private bool _enabled = true;
+        
+        private readonly List<string> _messages = new(25);
+        
+        private KeyCode _toggleKey = KeyCode.F10;
+        private int _maxMessageCount = 25;
+        private int _fontSize = 12;
 
         private const int MSG_LENGTH = 80;
 
@@ -31,15 +36,20 @@ namespace Modding
         [PublicAPI]
         public void Start()
         {
-            foreach (string font in OSFonts)
+            LoadSettings();
+
+            if (_font == null)
             {
-                _font = Font.CreateDynamicFontFromOSFont(font, 12);
+                foreach (string font in OSFonts)
+                {
+                    _font = Font.CreateDynamicFontFromOSFont(font, _fontSize);
 
-                // Found a monospace OS font.
-                if (_font != null)
-                    break;
+                    // Found a monospace OS font.
+                    if (_font != null)
+                        break;
 
-                Logger.APILogger.Log($"Font {font} not found.");
+                    Logger.APILogger.Log($"Font {font} not found.");
+                }
             }
 
             // Fallback
@@ -82,10 +92,52 @@ namespace Modding
             _textPanel.GetComponent<Text>().horizontalOverflow = HorizontalWrapMode.Wrap;
         }
 
+        private void LoadSettings()
+        {
+            InGameConsoleSettings settings = ModHooks.GlobalSettings.ConsoleSettings;
+            
+            _toggleKey = settings.ToggleHotkey;
+            
+            if (_toggleKey == KeyCode.Escape)
+            {
+                Logger.APILogger.LogError("Esc cannot be used as hotkey for console togging");
+                
+                _toggleKey = settings.ToggleHotkey = KeyCode.F10;
+            }
+
+            _maxMessageCount = settings.MaxMessageCount;
+            
+            if (_maxMessageCount <= 0)
+            {
+                Logger.APILogger.LogError($"Specified max console message count {_maxMessageCount} is invalid");
+                
+                _maxMessageCount = settings.MaxMessageCount = 24;
+            }
+
+            _fontSize = settings.FontSize;
+            
+            if (_fontSize <= 0)
+            {
+                Logger.APILogger.LogError($"Specified console font size {_fontSize} is invalid");
+                
+                _fontSize = settings.FontSize = 12;
+            }
+
+            string userFont = settings.Font;
+            
+            if (string.IsNullOrEmpty(userFont)) 
+                return;
+            
+            _font = Font.CreateDynamicFontFromOSFont(userFont, _fontSize);
+
+            if (_font == null)
+                Logger.APILogger.LogError($"Specified font {userFont} not found.");
+        }
+
         [PublicAPI]
         public void Update()
         {
-            if (!Input.GetKeyDown(KeyCode.F10))
+            if (!Input.GetKeyDown(_toggleKey))
             {
                 return;
             }
@@ -103,35 +155,26 @@ namespace Modding
         public void AddText(string message, LogLevel level)
         {
             IEnumerable<string> chunks = Chunks(message, MSG_LENGTH);
-
+            
             string color = $"<color={ModHooks.GlobalSettings.ConsoleSettings.DefaultColor}>";
 
             if (ModHooks.GlobalSettings.ConsoleSettings.UseLogColors)
             {
-                switch (level)
+                color = level switch
                 {
-                    case LogLevel.Fine:
-                        color = $"<color={ModHooks.GlobalSettings.ConsoleSettings.FineColor}>";
-                        break;
-                    case LogLevel.Info:
-                        color = $"<color={ModHooks.GlobalSettings.ConsoleSettings.InfoColor}>";
-                        break;
-                    case LogLevel.Debug:
-                        color = $"<color={ModHooks.GlobalSettings.ConsoleSettings.DebugColor}>";
-                        break;
-                    case LogLevel.Warn:
-                        color = $"<color={ModHooks.GlobalSettings.ConsoleSettings.WarningColor}>";
-                        break;
-                    case LogLevel.Error:
-                        color = $"<color={ModHooks.GlobalSettings.ConsoleSettings.ErrorColor}>";
-                        break;
-                }
+                    LogLevel.Fine => $"<color={ModHooks.GlobalSettings.ConsoleSettings.FineColor}>",
+                    LogLevel.Info => $"<color={ModHooks.GlobalSettings.ConsoleSettings.InfoColor}>",
+                    LogLevel.Debug => $"<color={ModHooks.GlobalSettings.ConsoleSettings.DebugColor}>",
+                    LogLevel.Warn => $"<color={ModHooks.GlobalSettings.ConsoleSettings.WarningColor}>",
+                    LogLevel.Error => $"<color={ModHooks.GlobalSettings.ConsoleSettings.ErrorColor}>",
+                    _ => color
+                };
             }
 
             foreach (string s in chunks)
                 _messages.Add(color + s + "</color>");
 
-            while (_messages.Count > 24)
+            while (_messages.Count > _maxMessageCount)
             {
                 _messages.RemoveAt(0);
             }

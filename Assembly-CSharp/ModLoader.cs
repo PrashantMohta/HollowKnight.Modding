@@ -9,7 +9,6 @@ using System.Text;
 using JetBrains.Annotations;
 using UnityEngine;
 using UnityEngine.SceneManagement;
-using UnityEngine.UI;
 using UObject = UnityEngine.Object;
 using USceneManager = UnityEngine.SceneManagement.SceneManager;
 using Modding.Utils;
@@ -39,11 +38,28 @@ namespace Modding
         public static Dictionary<string, ModInstance> ModInstanceNameMap { get; private set; } = new();
         public static HashSet<ModInstance> ModInstances { get; private set; } = new();
 
-        private static void AddModInstance(Type ty, ModInstance mod)
+        /// <summary>
+        /// Try to add a ModInstance to the internal dictionaries.
+        /// </summary>
+        /// <param name="ty">The type of the mod.</param>
+        /// <param name="mod">The ModInstance.</param>
+        /// <returns>True if the ModInstance was successfully added; false otherwise.</returns>
+        private static bool TryAddModInstance(Type ty, ModInstance mod)
         {
+            if (ModInstanceNameMap.ContainsKey(mod.Name))
+            {
+                Logger.APILogger.LogWarn($"Found multiple mods with name {mod.Name}.");
+                mod.Error = ModErrorState.Duplicate;
+                ModInstanceNameMap[mod.Name].Error = ModErrorState.Duplicate;
+                ModInstanceTypeMap[ty] = mod;
+                ModInstances.Add(mod);
+                return false;
+            }
+
             ModInstanceTypeMap[ty] = mod;
             ModInstanceNameMap[mod.Name] = mod;
             ModInstances.Add(mod);
+            return true;
         }
 
         private static ModVersionDraw modVersionDraw;
@@ -57,6 +73,16 @@ namespace Modding
         /// <returns></returns>
         public static IEnumerator LoadModsInit(GameObject coroutineHolder)
         {
+            try
+            {
+                Logger.InitializeFileStream();
+            }
+            catch (Exception e)
+            {
+                // We can still log to the console at least, if that's enabled.
+                Logger.APILogger.LogError(e);
+            }
+
             Logger.APILogger.Log("Starting mod loading");
 
             string managed_path = SystemInfo.operatingSystemFamily switch
@@ -80,6 +106,7 @@ namespace Modding
             }
 
             ModHooks.LoadGlobalSettings();
+            Logger.ClearOldModlogs();
 
             Logger.APILogger.LogDebug($"Loading assemblies and constructing mods");
 
@@ -146,9 +173,9 @@ namespace Modding
 
                         try
                         {
-                            if (ty.GetConstructor(new Type[0])?.Invoke(new object[0]) is Mod mod)
+                            if (ty.GetConstructor(Type.EmptyTypes)?.Invoke(Array.Empty<object>()) is Mod mod)
                             {
-                                AddModInstance(
+                                TryAddModInstance(
                                     ty,
                                     new ModInstance
                                     {
@@ -164,7 +191,7 @@ namespace Modding
                         {
                             Logger.APILogger.LogError(e);
 
-                            AddModInstance(
+                            TryAddModInstance(
                                 ty,
                                 new ModInstance
                                 {
@@ -210,6 +237,12 @@ namespace Modding
 
             foreach (ModInstance mod in orderedMods)
             {
+                if (mod.Error is not null)
+                {
+                    Logger.APILogger.LogWarn($"Not loading mod {mod.Name}: error state {mod.Error}");
+                    continue;
+                }
+
                 try
                 {
                     preloadedObjects.TryGetValue(mod, out Dictionary<string, Dictionary<string, GameObject>> preloads);
@@ -338,6 +371,9 @@ namespace Modding
                         case ModErrorState.Construct:
                             builder.AppendLine($"{mod.Name} : Failed to call constructor! Check ModLog.txt");
                             break;
+                        case ModErrorState.Duplicate:
+                            builder.AppendLine($"{mod.Name} : Failed to load! Duplicate mod detected");
+                            break;
                         case ModErrorState.Initialize:
                             builder.AppendLine($"{mod.Name} : Failed to initialize! Check ModLog.txt");
                             break;
@@ -362,7 +398,7 @@ namespace Modding
         {
             try
             {
-                if (mod is ModInstance {Enabled: false, Error: null})
+                if (mod is { Enabled: false, Error: null })
                 {
                     mod.Enabled = true;
                     mod.Mod.Initialize(preloadedObjects);
@@ -381,7 +417,7 @@ namespace Modding
         {
             try
             {
-                if (mod is ModInstance {Mod: ITogglableMod itmod, Enabled: true, Error: null})
+                if (mod is { Mod: ITogglableMod itmod, Enabled: true, Error: null })
                 {
                     mod.Enabled = false;
                     itmod.Unload();
@@ -414,6 +450,7 @@ namespace Modding
         public enum ModErrorState
         {
             Construct,
+            Duplicate,
             Initialize,
             Unload
         }
